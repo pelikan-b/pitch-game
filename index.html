@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Guitar Note Challenge Game</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; margin-top: 20px; }
+    canvas { border: 1px solid #ccc; display: block; margin: 10px auto; }
+    /* Fancy, serif font for the detected pitch */
+    #note { font-family: "Georgia", "Times New Roman", serif; font-size: 24px; }
+    /* Game UI styling */
+    #gameSection { margin: 20px auto; width: 1200px; }
+    #gameSection button { font-size: 18px; padding: 10px 20px; margin: 5px; }
+    #gameSection p { font-size: 18px; }
+    #results { text-align: left; margin: 20px auto; width: 1200px; }
+  </style>
+</head>
+<body>
+  <h1>Guitar Note Challenge Game</h1>
+  <p id="note">Waiting for input...</p>
+  <!-- Spectrum chart canvas (1200px wide) -->
+  <canvas id="chart" width="1200" height="200"></canvas>
+  <!-- Piano keyboard canvas (1200px wide) -->
+  <canvas id="piano" width="1200" height="120"></canvas>
+
+  <!-- Game section -->
+  <div id="gameSection">
+    <h2>Guitar Note Challenge</h2>
+    <button id="newGameBtn">New Game</button>
+    <button id="newNoteBtn" disabled>New Note</button>
+    <p>Target Note: <span id="targetNote">None</span></p>
+    <p id="gameStatus"></p>
+  </div>
+  <div id="results">
+    <h3>Round Results:</h3>
+    <ul id="resultList"></ul>
+  </div>
+
+  <script>
+    /********************
+     * Visualization Code
+     ********************/
+    const pianoFMin = 27.5;
+    const pianoFMax = 4186;
+
+    function freqToX(f, width) {
+      return (Math.log(f) - Math.log(pianoFMin)) /
+             (Math.log(pianoFMax) - Math.log(pianoFMin)) * width;
+    }
+
+    function frequencyToNote(frequency) {
+      const noteStrings = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+      const noteNumber = 12 * (Math.log(frequency / 440) / Math.log(2)) + 69;
+      const rounded = Math.round(noteNumber);
+      const note = noteStrings[rounded % 12];
+      const octave = Math.floor(rounded / 12) - 1;
+      return note + octave;
+    }
+
+    // YIN algorithm for pitch detection.
+    function yinPitch(buffer, sampleRate) {
+      const threshold = 0.10; // adjust threshold as needed
+      const bufferSize = buffer.length;
+      const yinBuffer = new Float32Array(bufferSize / 2);
+      // Step 1: difference function.
+      for (let tau = 0; tau < yinBuffer.length; tau++) {
+        yinBuffer[tau] = 0;
+        for (let i = 0; i < yinBuffer.length; i++) {
+          const delta = buffer[i] - buffer[i + tau];
+          yinBuffer[tau] += delta * delta;
+        }
+      }
+      // Step 2: cumulative mean normalized difference.
+      yinBuffer[0] = 1;
+      let runningSum = 0;
+      for (let tau = 1; tau < yinBuffer.length; tau++) {
+        runningSum += yinBuffer[tau];
+        yinBuffer[tau] *= tau / runningSum;
+      }
+      // Step 3: find tau with minimum normalized difference below threshold.
+      let tauEstimate = -1;
+      for (let tau = 2; tau < yinBuffer.length; tau++) {
+        if (yinBuffer[tau] < threshold) {
+          while (tau + 1 < yinBuffer.length && yinBuffer[tau + 1] < yinBuffer[tau]) {
+            tau++;
+          }
+          tauEstimate = tau;
+          break;
+        }
+      }
+      if (tauEstimate === -1) return -1;
+      // Step 4: parabolic interpolation.
+      let betterTau;
+      if (tauEstimate > 0 && tauEstimate < yinBuffer.length - 1) {
+        const s0 = yinBuffer[tauEstimate - 1];
+        const s1 = yinBuffer[tauEstimate];
+        const s2 = yinBuffer[tauEstimate + 1];
+        betterTau = tauEstimate + (s2 - s0) / (2 * (2 * s1 - s2 - s0));
+      } else {
+        betterTau = tauEstimate;
+      }
+      return sampleRate / betterTau;
+    }
+
+    function computePianoKeysEvenly(canvasWidth) {
+      const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+      let whiteKeys = [];
+      let blackKeys = [];
+      for (let m = 21; m <= 108; m++) {
+        const note = noteNames[m % 12];
+        const key = { midi: m, note: note };
+        if (note.indexOf('#') === -1) {
+          whiteKeys.push(key);
+        } else {
+          blackKeys.push(key);
+        }
+      }
+      const whiteCount = whiteKeys.length;
+      const whiteKeyWidth = canvasWidth / whiteCount;
+      for (let i = 0; i < whiteCount; i++) {
+        whiteKeys[i].left = i * whiteKeyWidth;
+        whiteKeys[i].right = (i + 1) * whiteKeyWidth;
+        whiteKeys[i].center = (i + 0.5) * whiteKeyWidth;
+      }
+      for (let i = 0; i < blackKeys.length; i++) {
+        const mBlack = blackKeys[i].midi;
+        let leftWhite = null, rightWhite = null;
+        for (let j = 0; j < whiteKeys.length; j++) {
+          if (whiteKeys[j].midi < mBlack) {
+            leftWhite = whiteKeys[j];
+          } else if (whiteKeys[j].midi > mBlack && !rightWhite) {
+            rightWhite = whiteKeys[j];
+          }
+        }
+        if (leftWhite && rightWhite) {
+          const center = (leftWhite.right + rightWhite.left) / 2;
+          blackKeys[i].center = center;
+          const blackKeyWidth = 0.7 * whiteKeyWidth;
+          blackKeys[i].left = center - blackKeyWidth / 2;
+          blackKeys[i].right = center + blackKeyWidth / 2;
+        }
+      }
+      return { whiteKeys, blackKeys };
+    }
+
+    let detectedMidi = null;
+    const chartCanvas = document.getElementById('chart');
+    const chartCtx = chartCanvas.getContext('2d');
+    const pianoCanvas = document.getElementById('piano');
+    const pianoCtx = pianoCanvas.getContext('2d');
+    const keysData = computePianoKeysEvenly(pianoCanvas.width);
+    const whiteKeys = keysData.whiteKeys;
+    const blackKeys = keysData.blackKeys;
+
+    // Draw white keys.
+    function drawWhiteKey(key) {
+      pianoCtx.fillStyle = "#fff";
+      pianoCtx.fillRect(key.left, 0, key.right - key.left, pianoCanvas.height);
+      pianoCtx.strokeStyle = "#000";
+      pianoCtx.strokeRect(key.left, 0, key.right - key.left, pianoCanvas.height);
+    }
+    // Draw black keys.
+    function drawBlackKey(key) {
+      const h = pianoCanvas.height * 0.6;
+      pianoCtx.fillStyle = "#000";
+      pianoCtx.fillRect(key.left, 0, key.right - key.left, h);
+    }
+    // For highlighting, we overlay a red border.
+    function highlightWhiteKey(key) {
+      pianoCtx.strokeStyle = "red";
+      pianoCtx.lineWidth = 3;
+      pianoCtx.strokeRect(key.left + 1, 1, key.right - key.left - 2, pianoCanvas.height - 2);
+      pianoCtx.lineWidth = 1;
+    }
+    function highlightBlackKey(key) {
+      const h = pianoCanvas.height * 0.6;
+      pianoCtx.strokeStyle = "red";
+      pianoCtx.lineWidth = 3;
+      pianoCtx.strokeRect(key.left + 1, 1, key.right - key.left - 2, h - 2);
+      pianoCtx.lineWidth = 1;
+    }
+    // Draw the entire keyboard.
+    function drawPiano() {
+      pianoCtx.clearRect(0, 0, pianoCanvas.width, pianoCanvas.height);
+      // Draw white keys.
+      whiteKeys.forEach(key => {
+        drawWhiteKey(key);
+      });
+      // Overlay a red highlight on the highlighted white key without covering adjacent black keys.
+      whiteKeys.forEach(key => {
+        if (detectedMidi === key.midi) {
+          highlightWhiteKey(key);
+        }
+      });
+      // Draw black keys on top.
+      blackKeys.forEach(key => {
+        drawBlackKey(key);
+      });
+      // Highlight black key if necessary.
+      blackKeys.forEach(key => {
+        if (detectedMidi === key.midi) {
+          highlightBlackKey(key);
+        }
+      });
+    }
+
+    function drawChartGrid(ctx, width, height, topDb, bottomDb) {
+      ctx.save();
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 0.5;
+      ctx.strokeStyle = "#aaa";
+      ctx.fillStyle = "#000";
+      ctx.font = "10px sans-serif";
+      const tickFrequencies = [27.5, 30, 40, 50, 60, 80, 100, 200, 400, 800, 1600, 3200, 4186];
+      tickFrequencies.forEach(freq => {
+        if (freq < 40 || freq > pianoFMax) return;
+        const x = (Math.log(freq) - Math.log(pianoFMin)) /
+                  (Math.log(pianoFMax) - Math.log(pianoFMin)) * width;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+        let label = freq >= 1000 ? (freq / 1000 + "k") : freq;
+        ctx.fillText(label, x + 2, height - 2);
+      });
+      const dBStep = 10;
+      for (let db = topDb; db >= bottomDb; db -= dBStep) {
+        let y = ((topDb - db) / (topDb - bottomDb)) * height;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+        ctx.fillText(db + " dB", 2, y - 2);
+      }
+      ctx.restore();
+    }
+
+    function drawFrequencyChart(freqDataDB, sampleRate, fftSize, analyserMinDb) {
+      const topDb = 0;
+      const bottomDb = analyserMinDb - 20;
+      chartCtx.fillStyle = "#fafafa";
+      chartCtx.fillRect(0, 0, chartCanvas.width, chartCanvas.height);
+      let points = [];
+      for (let i = 1; i < freqDataDB.length; i++) {
+        let freq = i * sampleRate / fftSize;
+        if (freq < pianoFMin || freq > pianoFMax) continue;
+        let x = (Math.log(freq) - Math.log(pianoFMin)) /
+                (Math.log(pianoFMax) - Math.log(pianoFMin)) * chartCanvas.width;
+        let db = freqDataDB[i];
+        let y = ((topDb - db) / (topDb - bottomDb)) * chartCanvas.height;
+        points.push({ x: x, y: y });
+      }
+      if (points.length > 0) {
+        points.unshift({ x: 0, y: points[0].y });
+        points.push({ x: chartCanvas.width, y: points[points.length - 1].y });
+      }
+      if (points.length === 0) return;
+      chartCtx.beginPath();
+      chartCtx.moveTo(points[0].x, points[0].y);
+      for (let i = 0; i < points.length - 1; i++) {
+        let curr = points[i];
+        let next = points[i + 1];
+        let midX = (curr.x + next.x) / 2;
+        let midY = (curr.y + next.y) / 2;
+        chartCtx.quadraticCurveTo(curr.x, curr.y, midX, midY);
+      }
+      let last = points[points.length - 1];
+      chartCtx.lineTo(last.x, last.y);
+      chartCtx.lineTo(last.x, chartCanvas.height);
+      chartCtx.lineTo(points[0].x, chartCanvas.height);
+      chartCtx.closePath();
+      chartCtx.fillStyle = "rgba(255, 100, 100, 0.3)";
+      chartCtx.fill();
+      chartCtx.strokeStyle = "rgb(255, 50, 50)";
+      chartCtx.lineWidth = 2;
+      chartCtx.stroke();
+      drawChartGrid(chartCtx, chartCanvas.width, chartCanvas.height, topDb, bottomDb);
+    }
+
+    let analyserMinDecibels = -100;
+
+    /********************
+     * Game Logic
+     ********************/
+    // Game state and configuration.
+    let gameActive = false;
+    let targetNote = null; // target note letter (e.g., "G" or "F#")
+    let roundCount = 0;
+    const totalRounds = 20;
+    let correctCount = 0;
+    let roundResults = [];
+    let roundConcluded = false;
+    // Lower volume threshold.
+    const volumeThreshold = 0.005;
+    // Extra noise reduction: ignore detections for a short delay after a new note.
+    const detectionDelay = 1000; // in milliseconds
+    let roundStartTime = 0;
+
+    // Extract note letter from a note string.
+    function getNoteLetter(noteStr) {
+      const m = noteStr.match(/^[A-G]#?/);
+      return m ? m[0] : noteStr;
+    }
+
+    // New Game: resets the game state and immediately starts a new round.
+    function startNewGame() {
+      roundCount = 0;
+      correctCount = 0;
+      roundResults = [];
+      gameActive = false;
+      roundConcluded = false;
+      targetNote = null;
+      document.getElementById('targetNote').textContent = "None";
+      document.getElementById('gameStatus').textContent = "Game started.";
+      document.getElementById('resultList').innerHTML = "";
+      document.getElementById('newNoteBtn').disabled = false;
+      // Immediately start a new note round.
+      startNewRound();
+    }
+
+    // New Note: starts a new round.
+    function startNewRound() {
+      if (roundCount >= totalRounds) return;
+      gameActive = true;
+      roundConcluded = false;
+      targetNote = null;
+      // Choose a random target note letter.
+      const notes = ["A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#"];
+      targetNote = notes[Math.floor(Math.random() * notes.length)];
+      document.getElementById('targetNote').textContent = targetNote;
+      document.getElementById('gameStatus').textContent = "Play the note!";
+      // Set the current time as the round start; ignore detections for the next second.
+      roundStartTime = performance.now();
+    }
+
+    // End the round with a given result.
+    function endRound(result) {
+      if (!roundConcluded) {
+        roundConcluded = true;
+        roundCount++;
+        roundResults.push(`Round ${roundCount}: ${result}`);
+        if (result === "Correct") correctCount++;
+        document.getElementById('gameStatus').textContent = result;
+        const ul = document.getElementById('resultList');
+        ul.innerHTML = "";
+        roundResults.forEach(r => {
+          const li = document.createElement('li');
+          li.textContent = r;
+          ul.appendChild(li);
+        });
+        if (roundCount >= totalRounds) {
+          document.getElementById('gameStatus').textContent += ` Game over! Score: ${correctCount} / ${totalRounds}`;
+          document.getElementById('newNoteBtn').disabled = true;
+        }
+      }
+      gameActive = false;
+    }
+
+    // Check detected note letter against the target.
+    function checkNoteMatch(noteStr) {
+      if (!gameActive || !noteStr) return;
+      const detectedLetter = getNoteLetter(noteStr);
+      if (detectedLetter === targetNote) {
+        endRound("Correct");
+      } else {
+        endRound("Wrong");
+      }
+    }
+
+    document.getElementById('newGameBtn').addEventListener('click', startNewGame);
+    document.getElementById('newNoteBtn').addEventListener('click', startNewRound);
+
+    /********************
+     * Main Audio & Update Loop
+     ********************/
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(function(stream) {
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        // Extra noise reduction: add a bandpass filter centered around 300 Hz.
+        const filter = audioContext.createBiquadFilter();
+        filter.type = "bandpass";
+        filter.frequency.value = 300;
+        filter.Q.value = 1.0;
+        const source = audioContext.createMediaStreamSource(stream);
+        source.connect(filter);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 2048;
+        analyser.minDecibels = -100;
+        analyser.maxDecibels = -30;
+        analyser.smoothingTimeConstant = 0.85;
+        filter.connect(analyser);
+        analyserMinDecibels = analyser.minDecibels;
+        const bufferLength = analyser.fftSize;
+        const timeDomainBuffer = new Float32Array(bufferLength);
+        const freqDataDB = new Float32Array(analyser.frequencyBinCount);
+
+        function update() {
+          analyser.getFloatTimeDomainData(timeDomainBuffer);
+          // Calculate RMS volume.
+          let vol = 0;
+          for (let i = 0; i < bufferLength; i++) {
+            vol += timeDomainBuffer[i] * timeDomainBuffer[i];
+          }
+          vol = Math.sqrt(vol / bufferLength);
+          // Use the YIN algorithm for pitch detection.
+          const pitch = yinPitch(timeDomainBuffer, audioContext.sampleRate);
+          let noteStr = "";
+          if (pitch !== -1) {
+            noteStr = frequencyToNote(pitch);
+            document.getElementById('note').textContent =
+              'Pitch: ' + pitch.toFixed(2) + ' Hz (' + noteStr + ')';
+            detectedMidi = Math.round(12 * (Math.log(pitch / 440) / Math.log(2)) + 69);
+          } else {
+            document.getElementById('note').textContent = 'No pitch detected';
+            detectedMidi = null;
+          }
+          // Extra noise reduction: ignore detections if less than detectionDelay has passed.
+          const currentTime = performance.now();
+          if (gameActive && noteStr && vol > volumeThreshold && (currentTime - roundStartTime > detectionDelay)) {
+            checkNoteMatch(noteStr);
+          }
+          analyser.getFloatFrequencyData(freqDataDB);
+          drawFrequencyChart(freqDataDB, audioContext.sampleRate, analyser.fftSize, analyserMinDecibels);
+          drawPiano();
+          requestAnimationFrame(update);
+        }
+        update();
+      })
+      .catch(function(err) {
+        console.error('Error accessing microphone:', err);
+      });
+  </script>
+</body>
+</html>
