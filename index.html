@@ -12,9 +12,60 @@
     #gameSection { margin: 20px auto; width: 1200px; }
     #gameSection button { font-size: 18px; padding: 10px 20px; margin: 5px; }
     #gameSection p { font-size: 18px; }
-    /* Huge font for target note display */
-    #targetNote { font-size: 48px; font-weight: bold; }
-    #results { text-align: left; margin: 20px auto; width: 1200px; }
+    /* Huge, flashy target note styling */
+    #targetContainer {
+      display: none;
+      font-size: 72px;
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+    #targetNote {
+      font-size: 72px;
+      font-weight: bold;
+      animation: flash 1s linear infinite;
+    }
+    @keyframes flash {
+      0% { color: red; }
+      50% { color: yellow; }
+      100% { color: red; }
+    }
+    /* Game status area styling */
+    #gameStatus {
+      min-height: 50px;
+      line-height: 50px;
+      font-weight: bold;
+      font-size: 20px;
+      margin-bottom: 10px;
+    }
+    /* "Next Note" button is removed; rounds auto-advance */
+    /* Log container styling */
+    #logContainer {
+      margin: 20px auto;
+      width: 1200px;
+      font-family: monospace;
+      display: none;
+      text-align: left;
+    }
+    #logContainer table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    #logContainer col:nth-child(1),
+    #logContainer col:nth-child(2) {
+      width: 150px;
+    }
+    #logContainer col:nth-child(3) {
+      width: auto;
+    }
+    #logContainer th, #logContainer td {
+      border: 1px solid #ccc;
+      padding: 8px;
+      text-align: center;
+    }
+    #logContainer th {
+      background-color: #f0f0f0;
+    }
   </style>
 </head>
 <body>
@@ -27,15 +78,32 @@
 
   <!-- Game section -->
   <div id="gameSection">
-    <h2>Guitar Note Challenge</h2>
+    <!-- Removed subtitle -->
     <button id="newGameBtn">New Game</button>
-    <button id="newNoteBtn" disabled>New Note</button>
-    <p>Play this note: <span id="targetNote">None</span></p>
+    <!-- Target note container: shows the huge flashy note -->
+    <p id="targetContainer">Play this note: <span id="targetNote"></span></p>
+    <!-- Game status (correct/wrong message) -->
     <p id="gameStatus"></p>
   </div>
-  <div id="results">
-    <h3>Round Results:</h3>
-    <ul id="resultList"></ul>
+
+  <!-- Log section -->
+  <div id="logContainer">
+    <h3 style="text-align:left;">Log</h3>
+    <table id="resultTable">
+      <colgroup>
+        <col style="width:150px;">
+        <col style="width:150px;">
+        <col style="width:auto;">
+      </colgroup>
+      <thead>
+        <tr>
+          <th>Round</th>
+          <th>Target Note</th>
+          <th>Result</th>
+        </tr>
+      </thead>
+      <tbody id="resultTableBody"></tbody>
+    </table>
   </div>
 
   <script>
@@ -44,12 +112,10 @@
      ********************/
     const pianoFMin = 27.5;
     const pianoFMax = 4186;
-
     function freqToX(f, width) {
       return (Math.log(f) - Math.log(pianoFMin)) /
              (Math.log(pianoFMax) - Math.log(pianoFMin)) * width;
     }
-
     function frequencyToNote(frequency) {
       const noteStrings = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
       const noteNumber = 12 * (Math.log(frequency / 440) / Math.log(2)) + 69;
@@ -58,13 +124,11 @@
       const octave = Math.floor(rounded / 12) - 1;
       return note + octave;
     }
-
     // YIN algorithm for pitch detection.
     function yinPitch(buffer, sampleRate) {
-      const threshold = 0.10; // adjust threshold as needed
+      const threshold = 0.10;
       const bufferSize = buffer.length;
       const yinBuffer = new Float32Array(bufferSize / 2);
-      // Step 1: difference function.
       for (let tau = 0; tau < yinBuffer.length; tau++) {
         yinBuffer[tau] = 0;
         for (let i = 0; i < yinBuffer.length; i++) {
@@ -72,14 +136,12 @@
           yinBuffer[tau] += delta * delta;
         }
       }
-      // Step 2: cumulative mean normalized difference.
       yinBuffer[0] = 1;
       let runningSum = 0;
       for (let tau = 1; tau < yinBuffer.length; tau++) {
         runningSum += yinBuffer[tau];
         yinBuffer[tau] *= tau / runningSum;
       }
-      // Step 3: find tau with minimum normalized difference below threshold.
       let tauEstimate = -1;
       for (let tau = 2; tau < yinBuffer.length; tau++) {
         if (yinBuffer[tau] < threshold) {
@@ -91,7 +153,6 @@
         }
       }
       if (tauEstimate === -1) return -1;
-      // Step 4: parabolic interpolation.
       let betterTau;
       if (tauEstimate > 0 && tauEstimate < yinBuffer.length - 1) {
         const s0 = yinBuffer[tauEstimate - 1];
@@ -103,7 +164,6 @@
       }
       return sampleRate / betterTau;
     }
-
     function computePianoKeysEvenly(canvasWidth) {
       const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
       let whiteKeys = [];
@@ -144,7 +204,6 @@
       }
       return { whiteKeys, blackKeys };
     }
-
     let detectedMidi = null;
     const chartCanvas = document.getElementById('chart');
     const chartCtx = chartCanvas.getContext('2d');
@@ -153,25 +212,20 @@
     const keysData = computePianoKeysEvenly(pianoCanvas.width);
     const whiteKeys = keysData.whiteKeys;
     const blackKeys = keysData.blackKeys;
-
-    // Draw white keys.
     function drawWhiteKey(key) {
       pianoCtx.fillStyle = "#fff";
       pianoCtx.fillRect(key.left, 0, key.right - key.left, pianoCanvas.height);
       pianoCtx.strokeStyle = "#000";
       pianoCtx.strokeRect(key.left, 0, key.right - key.left, pianoCanvas.height);
     }
-    // Draw black keys.
     function drawBlackKey(key) {
       const h = pianoCanvas.height * 0.6;
       pianoCtx.fillStyle = "#000";
       pianoCtx.fillRect(key.left, 0, key.right - key.left, h);
     }
-    // For highlighting, overlay a red border.
     function highlightWhiteKey(key) {
       pianoCtx.strokeStyle = "red";
       pianoCtx.lineWidth = 3;
-      // Draw the red border slightly inset so as not to obscure adjacent black keys.
       pianoCtx.strokeRect(key.left + 1, 1, key.right - key.left - 2, pianoCanvas.height - 2);
       pianoCtx.lineWidth = 1;
     }
@@ -184,28 +238,15 @@
     }
     function drawPiano() {
       pianoCtx.clearRect(0, 0, pianoCanvas.width, pianoCanvas.height);
-      // Draw white keys.
+      whiteKeys.forEach(key => { drawWhiteKey(key); });
       whiteKeys.forEach(key => {
-        drawWhiteKey(key);
+        if (detectedMidi === key.midi) { highlightWhiteKey(key); }
       });
-      // Overlay red border on highlighted white key.
-      whiteKeys.forEach(key => {
-        if (detectedMidi === key.midi) {
-          highlightWhiteKey(key);
-        }
-      });
-      // Draw black keys on top.
+      blackKeys.forEach(key => { drawBlackKey(key); });
       blackKeys.forEach(key => {
-        drawBlackKey(key);
-      });
-      // Highlight black key if needed.
-      blackKeys.forEach(key => {
-        if (detectedMidi === key.midi) {
-          highlightBlackKey(key);
-        }
+        if (detectedMidi === key.midi) { highlightBlackKey(key); }
       });
     }
-
     function drawChartGrid(ctx, width, height, topDb, bottomDb) {
       ctx.save();
       ctx.setLineDash([4, 4]);
@@ -236,7 +277,6 @@
       }
       ctx.restore();
     }
-
     function drawFrequencyChart(freqDataDB, sampleRate, fftSize, analyserMinDb) {
       const topDb = 0;
       const bottomDb = analyserMinDb - 20;
@@ -285,25 +325,23 @@
      * Game Logic
      ********************/
     let gameActive = false;
-    let targetNote = null; // e.g., "G" or "F#"
+    let targetNote = null; // target note letter (e.g., "G" or "F#")
     let roundCount = 0;
     const totalRounds = 20;
     let correctCount = 0;
     let roundResults = [];
     let roundConcluded = false;
-    // Lower volume threshold.
     const volumeThreshold = 0.005;
-    // Extra noise reduction: ignore detections for a short delay after starting a new note.
-    const detectionDelay = 1000; // milliseconds
+    const detectionDelay = 1000; // ms
     let roundStartTime = 0;
 
-    // Extract note letter (e.g., "G", "F#") from a note string.
+    // Extract note letter from a note string.
     function getNoteLetter(noteStr) {
       const m = noteStr.match(/^[A-G]#?/);
       return m ? m[0] : noteStr;
     }
 
-    // New Game: resets game state and immediately starts a new round.
+    // New Game: resets state and immediately starts a new round.
     function startNewGame() {
       roundCount = 0;
       correctCount = 0;
@@ -311,14 +349,17 @@
       gameActive = false;
       roundConcluded = false;
       targetNote = null;
-      document.getElementById('targetNote').textContent = "None";
+      document.getElementById('targetNote').textContent = "";
+      document.getElementById('targetContainer').style.display = "none";
       document.getElementById('gameStatus').textContent = "Game started.";
-      document.getElementById('resultList').innerHTML = "";
-      document.getElementById('newNoteBtn').disabled = false;
+      document.getElementById('gameStatus').style.backgroundColor = "";
+      document.getElementById('gameStatus').style.color = "";
+      document.getElementById('logContainer').style.display = "none";
+      document.getElementById('resultTableBody').innerHTML = "";
       startNewRound();
     }
 
-    // New Note: starts a new round.
+    // New Round: starts a new round.
     function startNewRound() {
       if (roundCount >= totalRounds) return;
       gameActive = true;
@@ -327,46 +368,78 @@
       const notes = ["A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#"];
       targetNote = notes[Math.floor(Math.random() * notes.length)];
       document.getElementById('targetNote').textContent = targetNote;
-      document.getElementById('gameStatus').textContent = "Play the note!";
+      document.getElementById('targetContainer').style.display = "block";
+      // The target note will flash as we wait for an answer.
+      document.getElementById('targetNote').classList.add("flash");
+      // Clear gameStatus so that the flashing target stands out.
+      document.getElementById('gameStatus').textContent = "";
+      document.getElementById('gameStatus').style.backgroundColor = "";
+      document.getElementById('gameStatus').style.color = "";
+      document.getElementById('logContainer').style.display = "block";
       roundStartTime = performance.now();
     }
 
-    // End round with result.
+    // End round: log result and automatically start next round after 1 second.
     function endRound(result) {
       if (!roundConcluded) {
         roundConcluded = true;
         roundCount++;
-        roundResults.push(`Round ${roundCount}: ${result}`);
+        roundResults.push({ round: roundCount, target: targetNote, result: result });
         if (result.startsWith("Correct")) correctCount++;
         document.getElementById('gameStatus').textContent = result;
-        const ul = document.getElementById('resultList');
-        ul.innerHTML = "";
+        if (result.startsWith("Correct")) {
+          document.getElementById('gameStatus').style.backgroundColor = "#d4edda";
+          document.getElementById('gameStatus').style.color = "#155724";
+        } else {
+          document.getElementById('gameStatus').style.backgroundColor = "#f8d7da";
+          document.getElementById('gameStatus').style.color = "#721c24";
+        }
+        const tbody = document.getElementById('resultTableBody');
+        tbody.innerHTML = "";
         roundResults.forEach(r => {
-          const li = document.createElement('li');
-          li.textContent = r;
-          ul.appendChild(li);
+          const tr = document.createElement('tr');
+          const tdRound = document.createElement('td');
+          tdRound.textContent = r.round;
+          const tdTarget = document.createElement('td');
+          tdTarget.innerHTML = "<b>" + r.target + "</b>";
+          const tdResult = document.createElement('td');
+          if (r.result.startsWith("Correct")) {
+            tdResult.innerHTML = "<b style='color:green;'>" + r.result + "</b>";
+          } else {
+            tdResult.innerHTML = "<b style='color:red;'>" + r.result + "</b>";
+          }
+          tr.appendChild(tdRound);
+          tr.appendChild(tdTarget);
+          tr.appendChild(tdResult);
+          tbody.appendChild(tr);
         });
         if (roundCount >= totalRounds) {
           document.getElementById('gameStatus').textContent += ` Game over! Score: ${correctCount} / ${totalRounds}`;
-          document.getElementById('newNoteBtn').disabled = true;
+        } else {
+          setTimeout(() => {
+            // Remove flashing effect for the next round.
+            document.getElementById('targetNote').classList.remove("flash");
+            startNewRound();
+          }, 1000);
         }
       }
       gameActive = false;
     }
 
-    // Check detected note letter against target.
+    // Check detected note letter.
     function checkNoteMatch(noteStr) {
       if (!gameActive || !noteStr) return;
       const detectedLetter = getNoteLetter(noteStr);
+      // Remove flashing effect when answer is given.
+      document.getElementById('targetNote').classList.remove("flash");
       if (detectedLetter === targetNote) {
-        endRound("Correct");
+        endRound("Correct, you played " + noteStr + "!");
       } else {
-        endRound("Wrong, you played " + detectedLetter);
+        endRound("Wrong, you played " + noteStr + "!");
       }
     }
 
     document.getElementById('newGameBtn').addEventListener('click', startNewGame);
-    document.getElementById('newNoteBtn').addEventListener('click', startNewRound);
 
     /********************
      * Main Audio & Update Loop
@@ -394,7 +467,6 @@
 
         function update() {
           analyser.getFloatTimeDomainData(timeDomainBuffer);
-          // Calculate RMS volume.
           let vol = 0;
           for (let i = 0; i < bufferLength; i++) {
             vol += timeDomainBuffer[i] * timeDomainBuffer[i];
@@ -411,7 +483,6 @@
             document.getElementById('note').textContent = 'No pitch detected';
             detectedMidi = null;
           }
-          // Extra noise reduction: ignore detections for detectionDelay after a new round starts.
           const currentTime = performance.now();
           if (gameActive && noteStr && vol > volumeThreshold && (currentTime - roundStartTime > detectionDelay)) {
             checkNoteMatch(noteStr);
