@@ -12,6 +12,8 @@
     #gameSection { margin: 20px auto; width: 1200px; }
     #gameSection button { font-size: 18px; padding: 10px 20px; margin: 5px; }
     #gameSection p { font-size: 18px; }
+    /* Huge font for target note display */
+    #targetNote { font-size: 48px; font-weight: bold; }
     #results { text-align: left; margin: 20px auto; width: 1200px; }
   </style>
 </head>
@@ -28,7 +30,7 @@
     <h2>Guitar Note Challenge</h2>
     <button id="newGameBtn">New Game</button>
     <button id="newNoteBtn" disabled>New Note</button>
-    <p>Target Note: <span id="targetNote">None</span></p>
+    <p>Play this note: <span id="targetNote">None</span></p>
     <p id="gameStatus"></p>
   </div>
   <div id="results">
@@ -165,10 +167,11 @@
       pianoCtx.fillStyle = "#000";
       pianoCtx.fillRect(key.left, 0, key.right - key.left, h);
     }
-    // For highlighting, we overlay a red border.
+    // For highlighting, overlay a red border.
     function highlightWhiteKey(key) {
       pianoCtx.strokeStyle = "red";
       pianoCtx.lineWidth = 3;
+      // Draw the red border slightly inset so as not to obscure adjacent black keys.
       pianoCtx.strokeRect(key.left + 1, 1, key.right - key.left - 2, pianoCanvas.height - 2);
       pianoCtx.lineWidth = 1;
     }
@@ -179,14 +182,13 @@
       pianoCtx.strokeRect(key.left + 1, 1, key.right - key.left - 2, h - 2);
       pianoCtx.lineWidth = 1;
     }
-    // Draw the entire keyboard.
     function drawPiano() {
       pianoCtx.clearRect(0, 0, pianoCanvas.width, pianoCanvas.height);
       // Draw white keys.
       whiteKeys.forEach(key => {
         drawWhiteKey(key);
       });
-      // Overlay a red highlight on the highlighted white key without covering adjacent black keys.
+      // Overlay red border on highlighted white key.
       whiteKeys.forEach(key => {
         if (detectedMidi === key.midi) {
           highlightWhiteKey(key);
@@ -196,7 +198,7 @@
       blackKeys.forEach(key => {
         drawBlackKey(key);
       });
-      // Highlight black key if necessary.
+      // Highlight black key if needed.
       blackKeys.forEach(key => {
         if (detectedMidi === key.midi) {
           highlightBlackKey(key);
@@ -282,9 +284,8 @@
     /********************
      * Game Logic
      ********************/
-    // Game state and configuration.
     let gameActive = false;
-    let targetNote = null; // target note letter (e.g., "G" or "F#")
+    let targetNote = null; // e.g., "G" or "F#"
     let roundCount = 0;
     const totalRounds = 20;
     let correctCount = 0;
@@ -292,17 +293,17 @@
     let roundConcluded = false;
     // Lower volume threshold.
     const volumeThreshold = 0.005;
-    // Extra noise reduction: ignore detections for a short delay after a new note.
-    const detectionDelay = 1000; // in milliseconds
+    // Extra noise reduction: ignore detections for a short delay after starting a new note.
+    const detectionDelay = 1000; // milliseconds
     let roundStartTime = 0;
 
-    // Extract note letter from a note string.
+    // Extract note letter (e.g., "G", "F#") from a note string.
     function getNoteLetter(noteStr) {
       const m = noteStr.match(/^[A-G]#?/);
       return m ? m[0] : noteStr;
     }
 
-    // New Game: resets the game state and immediately starts a new round.
+    // New Game: resets game state and immediately starts a new round.
     function startNewGame() {
       roundCount = 0;
       correctCount = 0;
@@ -314,7 +315,6 @@
       document.getElementById('gameStatus').textContent = "Game started.";
       document.getElementById('resultList').innerHTML = "";
       document.getElementById('newNoteBtn').disabled = false;
-      // Immediately start a new note round.
       startNewRound();
     }
 
@@ -324,22 +324,20 @@
       gameActive = true;
       roundConcluded = false;
       targetNote = null;
-      // Choose a random target note letter.
       const notes = ["A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#"];
       targetNote = notes[Math.floor(Math.random() * notes.length)];
       document.getElementById('targetNote').textContent = targetNote;
       document.getElementById('gameStatus').textContent = "Play the note!";
-      // Set the current time as the round start; ignore detections for the next second.
       roundStartTime = performance.now();
     }
 
-    // End the round with a given result.
+    // End round with result.
     function endRound(result) {
       if (!roundConcluded) {
         roundConcluded = true;
         roundCount++;
         roundResults.push(`Round ${roundCount}: ${result}`);
-        if (result === "Correct") correctCount++;
+        if (result.startsWith("Correct")) correctCount++;
         document.getElementById('gameStatus').textContent = result;
         const ul = document.getElementById('resultList');
         ul.innerHTML = "";
@@ -356,14 +354,14 @@
       gameActive = false;
     }
 
-    // Check detected note letter against the target.
+    // Check detected note letter against target.
     function checkNoteMatch(noteStr) {
       if (!gameActive || !noteStr) return;
       const detectedLetter = getNoteLetter(noteStr);
       if (detectedLetter === targetNote) {
         endRound("Correct");
       } else {
-        endRound("Wrong");
+        endRound("Wrong, you played " + detectedLetter);
       }
     }
 
@@ -402,7 +400,6 @@
             vol += timeDomainBuffer[i] * timeDomainBuffer[i];
           }
           vol = Math.sqrt(vol / bufferLength);
-          // Use the YIN algorithm for pitch detection.
           const pitch = yinPitch(timeDomainBuffer, audioContext.sampleRate);
           let noteStr = "";
           if (pitch !== -1) {
@@ -414,7 +411,7 @@
             document.getElementById('note').textContent = 'No pitch detected';
             detectedMidi = null;
           }
-          // Extra noise reduction: ignore detections if less than detectionDelay has passed.
+          // Extra noise reduction: ignore detections for detectionDelay after a new round starts.
           const currentTime = performance.now();
           if (gameActive && noteStr && vol > volumeThreshold && (currentTime - roundStartTime > detectionDelay)) {
             checkNoteMatch(noteStr);
