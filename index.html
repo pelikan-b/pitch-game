@@ -6,15 +6,14 @@
   <style>
     body { font-family: sans-serif; text-align: center; margin-top: 20px; }
     canvas { border: 1px solid #ccc; display: block; margin: 10px auto; }
-    /* Fancy, serif font for the detected pitch */
-    #note { font-family: "Georgia", "Times New Roman", serif; font-size: 24px; }
+    /* Pitch detection text is hidden */
+    #note { display: none; }
     /* Game UI styling */
     #gameSection { margin: 20px auto; width: 1200px; }
     #gameSection button { font-size: 18px; padding: 10px 20px; margin: 5px; }
     #gameSection p { font-size: 18px; }
     /* Huge, flashy target note styling */
     #targetContainer {
-      display: none;
       font-size: 72px;
       font-weight: bold;
       margin-bottom: 10px;
@@ -37,13 +36,23 @@
       font-size: 20px;
       margin-bottom: 10px;
     }
-    /* "Next Note" button is removed; rounds auto-advance */
-    /* Log container styling */
+    /* Final stats banner styling */
+    #finalStats {
+      display: none;
+      font-size: 36px;
+      font-weight: bold;
+      padding: 20px;
+      margin: 20px auto;
+      width: 1200px;
+      background-color: #cce5ff;
+      color: #004085;
+      border: 2px solid #b8daff;
+    }
+    /* Log container styling - always visible (even if empty) */
     #logContainer {
       margin: 20px auto;
       width: 1200px;
       font-family: monospace;
-      display: none;
       text-align: left;
     }
     #logContainer table {
@@ -66,10 +75,17 @@
     #logContainer th {
       background-color: #f0f0f0;
     }
+    /* New Game button: regular button at end of page */
+    #newGameBtn {
+      font-size: 24px;
+      padding: 10px 20px;
+      margin-top: 20px;
+    }
   </style>
 </head>
 <body>
   <h1>Guitar Note Challenge Game</h1>
+  <!-- Hidden pitch detection text -->
   <p id="note">Waiting for input...</p>
   <!-- Spectrum chart canvas (1200px wide) -->
   <canvas id="chart" width="1200" height="200"></canvas>
@@ -78,10 +94,8 @@
 
   <!-- Game section -->
   <div id="gameSection">
-    <!-- Removed subtitle -->
-    <button id="newGameBtn">New Game</button>
-    <!-- Target note container: shows the huge flashy note -->
-    <p id="targetContainer">Play this note: <span id="targetNote"></span></p>
+    <!-- Target note container: displays huge flashing text -->
+    <p id="targetContainer" style="display:none;">Play this note: <span id="targetNote" class="flash"></span></p>
     <!-- Game status (correct/wrong message) -->
     <p id="gameStatus"></p>
   </div>
@@ -105,6 +119,12 @@
       <tbody id="resultTableBody"></tbody>
     </table>
   </div>
+
+  <!-- Final Stats Banner -->
+  <div id="finalStats"></div>
+
+  <!-- New Game button at the end of the page -->
+  <button id="newGameBtn">New Game</button>
 
   <script>
     /********************
@@ -239,6 +259,7 @@
     function drawPiano() {
       pianoCtx.clearRect(0, 0, pianoCanvas.width, pianoCanvas.height);
       whiteKeys.forEach(key => { drawWhiteKey(key); });
+      // Only highlight keys when a note is clearly detected
       whiteKeys.forEach(key => {
         if (detectedMidi === key.midi) { highlightWhiteKey(key); }
       });
@@ -318,7 +339,6 @@
       chartCtx.stroke();
       drawChartGrid(chartCtx, chartCanvas.width, chartCanvas.height, topDb, bottomDb);
     }
-
     let analyserMinDecibels = -100;
 
     /********************
@@ -334,6 +354,9 @@
     const volumeThreshold = 0.005;
     const detectionDelay = 1000; // ms
     let roundStartTime = 0;
+
+    // Global variable to store current volume.
+    let currentVolume = 0;
 
     // Extract note letter from a note string.
     function getNoteLetter(noteStr) {
@@ -354,8 +377,10 @@
       document.getElementById('gameStatus').textContent = "Game started.";
       document.getElementById('gameStatus').style.backgroundColor = "";
       document.getElementById('gameStatus').style.color = "";
-      document.getElementById('logContainer').style.display = "none";
       document.getElementById('resultTableBody').innerHTML = "";
+      document.getElementById('finalStats').style.display = "none";
+      // Always show the log container (it may be empty initially)
+      document.getElementById('logContainer').style.display = "block";
       startNewRound();
     }
 
@@ -369,13 +394,12 @@
       targetNote = notes[Math.floor(Math.random() * notes.length)];
       document.getElementById('targetNote').textContent = targetNote;
       document.getElementById('targetContainer').style.display = "block";
-      // The target note will flash as we wait for an answer.
+      // Add flashing effect while waiting.
       document.getElementById('targetNote').classList.add("flash");
-      // Clear gameStatus so that the flashing target stands out.
+      // Clear gameStatus.
       document.getElementById('gameStatus').textContent = "";
       document.getElementById('gameStatus').style.backgroundColor = "";
       document.getElementById('gameStatus').style.color = "";
-      document.getElementById('logContainer').style.display = "block";
       roundStartTime = performance.now();
     }
 
@@ -415,9 +439,12 @@
         });
         if (roundCount >= totalRounds) {
           document.getElementById('gameStatus').textContent += ` Game over! Score: ${correctCount} / ${totalRounds}`;
+          const finalStatsEl = document.getElementById('finalStats');
+          finalStatsEl.textContent = `Game over! Score: ${correctCount} / ${totalRounds}`;
+          finalStatsEl.style.display = "block";
+          document.getElementById('targetContainer').style.display = "none";
         } else {
           setTimeout(() => {
-            // Remove flashing effect for the next round.
             document.getElementById('targetNote').classList.remove("flash");
             startNewRound();
           }, 1000);
@@ -476,11 +503,8 @@
           let noteStr = "";
           if (pitch !== -1) {
             noteStr = frequencyToNote(pitch);
-            document.getElementById('note').textContent =
-              'Pitch: ' + pitch.toFixed(2) + ' Hz (' + noteStr + ')';
             detectedMidi = Math.round(12 * (Math.log(pitch / 440) / Math.log(2)) + 69);
           } else {
-            document.getElementById('note').textContent = 'No pitch detected';
             detectedMidi = null;
           }
           const currentTime = performance.now();
